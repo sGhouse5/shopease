@@ -1,0 +1,172 @@
+---
+# Deploys build/libs/shopease.jar to the "app" hosts.
+# Each deploy goes to its own release directory; "current" is a symlink.
+# If the health check fails, the symlink is moved back and the old version is restarted.
+#
+# Run by Jenkins; manual example:
+#   cd ansible
+#   ansible-playbook -i inventory/staging.ini deploy.yml \
+#     --private-key ~/.ssh/shopease_vm -e jar_path=../build/libs/shopease.jar -e release_id=manual-1
+- name: Deploy ShopEase
+  hosts: app
+  become: true
+  vars:
+    app_user: shopease
+    app_home: /opt/shopease
+    releases_dir: "{{ app_home }}/releases"
+    current_link: "{{ app_home }}/current"
+    app_port: 8080
+    keep_releases: 3
+    release_id: manual
+    health_retries: 12
+    health_delay: 5
+
+  pre_tasks:
+    - name: Make sure a jar was supplied and exists on the control machine
+      ansible.builtin.assert:
+        that:
+          - jar_path is defined
+        fail_msg: "Pass -e jar_path=/path/to/shopease.jar"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Check the jar file exists locally
+      ansible.builtin.stat:
+        path: "{{ jar_path }}"
+      register: local_jar
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Stop if the jar is missing
+      ansible.builtin.fail:
+        msg: "Jar not found at {{ jar_path }}"
+      when: not local_jar.stat.exists
+      run_once: true
+
+  tasks:
+    - name: Install Java 17 runtime
+      ansible.builtin.apt:
+        name: openjdk-17-jre-headless
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the service group
+      ansible.builtin.group:
+        name: "{{ app_user }}"
+        state: present
+
+    - name: Create the service user (no login shell)
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        group: "{{ app_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        home: "{{ app_home }}"
+        create_home: false
+
+    - name: Create application directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+      loop:
+        - "{{ app_home }}"
+        - "{{ releases_dir }}"
+        - "{{ app_home }}/data"
+        - "{{ releases_dir }}/{{ release_id }}"
+
+    - name: Remember which release is live right now
+      ansible.builtin.stat:
+        path: "{{ current_link }}"
+      register: current_stat
+
+    - name: Store the previous release path (empty on the first deploy)
+      ansible.builtin.set_fact:
+        previous_release: "{{ current_stat.stat.lnk_source | default('') }}"
+
+    - name: Upload the new jar
+      ansible.builtin.copy:
+        src: "{{ jar_path }}"
+        dest: "{{ releases_dir }}/{{ release_id }}/shopease.jar"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+
+    - name: Install the systemd unit
+      ansible.builtin.template:
+        src: shopease.service.j2
+        dest: /etc/systemd/system/shopease.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: unit_file
+
+    - name: Reload systemd when the unit changed
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: unit_file.changed
+
+    - name: Switch to the new release and verify it
+      block:
+        - name: Point "current" at the new release
+          ansible.builtin.file:
+            src: "{{ releases_dir }}/{{ release_id }}"
+            dest: "{{ current_link }}"
+            state: link
+            force: true
+
+        - name: Enable and restart the service
+          ansible.builtin.systemd:
+            name: shopease
+            state: restarted
+            enabled: true
+
+        - name: Wait until the health endpoint reports UP
+          ansible.builtin.uri:
+            url: "http://localhost:{{ app_port }}/actuator/health"
+            return_content: true
+          register: health
+          until: health.status == 200 and ('UP' in health.content)
+          retries: "{{ health_retries }}"
+          delay: "{{ health_delay }}"
+
+        - name: Report success
+          ansible.builtin.debug:
+            msg: "Release {{ release_id }} is live and healthy."
+
+      rescue:
+        - name: Health check failed - say what we are doing
+          ansible.builtin.debug:
+            msg: "Release {{ release_id }} failed its health check. Rolling back to '{{ previous_release }}'."
+
+        - name: Point "current" back at the previous release
+          ansible.builtin.file:
+            src: "{{ previous_release }}"
+            dest: "{{ current_link }}"
+            state: link
+            force: true
+          when: previous_release | length > 0
+
+        - name: Restart the previous version
+          ansible.builtin.systemd:
+            name: shopease
+            state: restarted
+          when: previous_release | length > 0
+
+        - name: Fail the deployment so Jenkins shows it as failed
+          ansible.builtin.fail:
+            msg: "Deployment of {{ release_id }} failed and was rolled back."
+
+    - name: Remove old releases (keep the newest few)
+      ansible.builtin.shell: |
+        set -o pipefail
+        cd {{ releases_dir }}
+        ls -1t | tail -n +{{ keep_releases | int + 1 }} | xargs -r rm -rf
+      args:
+        executable: /bin/bash
+      changed_when: false

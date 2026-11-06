@@ -1,0 +1,40 @@
+# Azure Pipelines: build and test on every push/PR to main, then publish the jar.
+# Runs next to Jenkins (which does the deployment) so you can compare both tools.
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - task: JavaToolInstaller@0
+    displayName: Use Java 17
+    inputs:
+      versionSpec: '17'
+      jdkArchitectureOption: x64
+      jdkSourceOption: PreInstalled
+
+  - script: |
+      chmod +x gradlew
+      ./gradlew clean build --no-daemon
+    displayName: Gradle build and test
+
+  - task: PublishTestResults@2
+    displayName: Publish test results
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: 'build/test-results/test/*.xml'
+
+  - task: PublishBuildArtifacts@1
+    displayName: Publish jar
+    inputs:
+      pathToPublish: build/libs
+      artifactName: shopease-jar

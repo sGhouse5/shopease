@@ -1,0 +1,49 @@
+plugins {
+    id 'java'
+    id 'jacoco'
+    id 'org.springframework.boot' version '3.5.0'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.shopease'
+// Jenkins sets BUILD_NUMBER, so every pipeline build gets its own visible version.
+version = System.getenv('BUILD_NUMBER') ? "0.1.${System.getenv('BUILD_NUMBER')}" : '0.1.0-SNAPSHOT'
+sourceCompatibility = '17'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    runtimeOnly 'com.h2database:h2'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Fixed jar name so Jenkins and Ansible never need to guess the file.
+bootJar {
+    archiveFileName = 'shopease.jar'
+}
+
+// Exposes version/build time at /actuator/info (shown in the page footer).
+springBoot {
+    buildInfo()
+}
+
+test {
+    useJUnitPlatform()
+    finalizedBy jacocoTestReport
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}

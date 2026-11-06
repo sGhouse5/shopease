@@ -1,0 +1,3 @@
+# Keep Linux line endings even when committed from Windows (shell scripts and gradlew break with CRLF).
+* text=auto eol=lf
+*.bat text eol=crlf

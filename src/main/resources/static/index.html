@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShopEase</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { margin-bottom: .2rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; }
+    .price { font-weight: 600; }
+    button { cursor: pointer; padding: .4rem .8rem; }
+    #cart { margin-top: 2rem; border-top: 1px solid #ccc; padding-top: 1rem; }
+    footer { margin-top: 2rem; color: #666; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <h1>ShopEase</h1>
+  <p>Demo shop deployed by the Jenkins + Ansible pipeline.</p>
+  <div id="products" class="grid"></div>
+
+  <div id="cart">
+    <h2>Your cart</h2>
+    <div id="cart-lines">Empty</div>
+    <p>
+      <input id="customer" placeholder="Your name">
+      <button id="checkout">Checkout</button>
+    </p>
+    <p id="message" role="status"></p>
+  </div>
+
+  <footer id="version">Version: loading…</footer>
+
+  <script>
+    // The cart id lives in this browser only.
+    var cartId = null;
+    try { cartId = localStorage.getItem('cartId'); } catch (e) { /* storage may be unavailable */ }
+    if (!cartId) {
+      cartId = 'c-' + Math.random().toString(36).slice(2, 10);
+      try { localStorage.setItem('cartId', cartId); } catch (e) { /* ignore */ }
+    }
+
+    function say(text) { document.getElementById('message').textContent = text; }
+
+    function loadProducts() {
+      fetch('/api/products').then(function (r) { return r.json(); }).then(function (items) {
+        var box = document.getElementById('products');
+        box.innerHTML = '';
+        items.forEach(function (p) {
+          var card = document.createElement('div');
+          card.className = 'card';
+          var title = document.createElement('strong');
+          title.textContent = p.name;
+          var desc = document.createElement('p');
+          desc.textContent = p.description || '';
+          var price = document.createElement('p');
+          price.className = 'price';
+          price.textContent = p.price.toFixed(2) + '  (stock: ' + p.stock + ')';
+          var btn = document.createElement('button');
+          btn.textContent = 'Add to cart';
+          btn.onclick = function () { addToCart(p.id); };
+          card.append(title, desc, price, btn);
+          box.appendChild(card);
+        });
+      });
+    }
+
+    function renderCart(cart) {
+      var el = document.getElementById('cart-lines');
+      if (!cart.lines.length) { el.textContent = 'Empty'; return; }
+      el.innerHTML = '';
+      cart.lines.forEach(function (l) {
+        var row = document.createElement('div');
+        row.textContent = l.name + ' x ' + l.quantity + ' = ' + l.lineTotal.toFixed(2);
+        el.appendChild(row);
+      });
+      var total = document.createElement('strong');
+      total.textContent = 'Total: ' + cart.total.toFixed(2);
+      el.appendChild(total);
+    }
+
+    function addToCart(productId) {
+      fetch('/api/carts/' + cartId + '/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: productId, quantity: 1 })
+      }).then(function (r) { return r.json(); }).then(function (cart) {
+        renderCart(cart);
+        say('');
+      });
+    }
+
+    document.getElementById('checkout').onclick = function () {
+      var name = document.getElementById('customer').value.trim();
+      fetch('/api/carts/' + cartId + '/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customerName: name })
+      }).then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+        .then(function (res) {
+          if (res.ok) {
+            say('Order #' + res.body.id + ' placed. Total ' + res.body.total.toFixed(2));
+            renderCart({ lines: [], total: 0 });
+            loadProducts();
+          } else {
+            say('Could not checkout: ' + (res.body.error || 'unknown error'));
+          }
+        });
+    };
+
+    fetch('/actuator/info').then(function (r) { return r.json(); }).then(function (info) {
+      var build = info.build || {};
+      document.getElementById('version').textContent =
+        'Version: ' + (build.version || 'unknown') + ' (built ' + (build.time || 'n/a') + ')';
+    }).catch(function () {
+      document.getElementById('version').textContent = 'Version: unavailable';
+    });
+
+    loadProducts();
+    fetch('/api/carts/' + cartId).then(function (r) { return r.json(); }).then(renderCart);
+  </script>
+</body>
+</html>

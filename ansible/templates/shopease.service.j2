@@ -1,0 +1,17 @@
+[Unit]
+Description=ShopEase demo shop
+After=network.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_home }}
+Environment=SPRING_PROFILES_ACTIVE=prod
+Environment=SHOPEASE_DATA_DIR={{ app_home }}/data
+ExecStart=/usr/bin/java -jar {{ current_link }}/shopease.jar --server.port={{ app_port }}
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

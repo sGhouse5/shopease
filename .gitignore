@@ -1,0 +1,10 @@
+.gradle/
+build/
+data/
+*.iml
+.idea/
+.vscode/
+*.log
+*.retry
+.vault_pass
+.jdk17/
