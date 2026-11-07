@@ -15,7 +15,8 @@
     app_home: /opt/shopease
     releases_dir: "{{ app_home }}/releases"
     current_link: "{{ app_home }}/current"
-    app_port: 8080
+    # Inventory may set shop_port (local WSL target uses 8081 because Jenkins owns 8080).
+    app_port: "{{ shop_port | default(8080) }}"
     keep_releases: 3
     release_id: manual
     health_retries: 12
