@@ -21,7 +21,7 @@ exit /b 1
 
 :local
 wsl --status >nul 2>&1
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   echo WSL is not ready. Open an Administrator CMD and run:  wsl --install --no-distribution
   echo Restart the PC, then run this again.
   exit /b 1
@@ -29,14 +29,14 @@ if errorlevel 1 (
 if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
 if not exist "%KEY%.pub" ssh-keygen -t ed25519 -f "%KEY%" -N ""
 wsl -d shopease -u root -- true >nul 2>&1
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   call :createdistro
-  if errorlevel 1 exit /b 1
+  if !errorlevel! neq 0 exit /b 1
 )
 wsl -d shopease -u root -- test -d /var/lib/jenkins >nul 2>&1
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   call :installjenkins
-  if errorlevel 1 exit /b 1
+  if !errorlevel! neq 0 exit /b 1
 )
 start "shopease-keepalive" /min wsl -d shopease -u root --exec sleep infinity
 set "TARGET_HOST=127.0.0.1"
@@ -51,12 +51,12 @@ goto finish
 
 :azure
 where az >nul 2>&1
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   echo Azure CLI not found. Run: winget install -e --id Microsoft.AzureCLI
   exit /b 1
 )
 az account show >nul 2>&1
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   echo No Azure login or subscription. Run: az login
   exit /b 1
 )
@@ -74,7 +74,7 @@ if not defined STAGING_IP (
 )
 set "SSHUSER=azureuser"
 call :waitssh !JENKINS_IP! !SSHUSER!
-if errorlevel 1 exit /b 1
+if !errorlevel! neq 0 exit /b 1
 call :ensurejenkins !JENKINS_IP! !SSHUSER!
 set "TARGET_HOST=!STAGING_IP!"
 set "EXTRA="
@@ -90,7 +90,6 @@ exit /b 0
 choice /c YN /m "Delete the local WSL environment (Jenkins settings and app data are lost)"
 if errorlevel 2 exit /b 0
 wsl --unregister shopease
-if exist "%USERPROFILE%\wsl\shopease" rmdir /s /q "%USERPROFILE%\wsl\shopease"
 echo Deleted. Run use-target.cmd local to create it again.
 exit /b 0
 
@@ -105,7 +104,7 @@ echo Target:   %MODE%
 echo Jenkins:  !JURL!
 echo Shop:     !SURL!
 git -C "%ROOT%." diff --quiet -- ansible/inventory
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   git -C "%ROOT%." add ansible/inventory
   git -C "%ROOT%." commit -m "Switch deploy target to %MODE%"
   git -C "%ROOT%." push
@@ -115,24 +114,47 @@ echo Done. If Jenkins is new on this target, do the Jenkins browser steps once: 
 exit /b 0
 
 :createdistro
-set "TAR=%TEMP%\ubuntu-noble-wsl.tar.gz"
-if not exist "%TAR%" (
-  echo Downloading Ubuntu 24.04 for WSL - about 350 MB...
-  set "GOT="
-  for %%U in (wsl ubuntu ubuntu24.04lts) do if not defined GOT (
-    curl -fL -o "%TAR%.part" "https://cloud-images.ubuntu.com/wsl/noble/current/ubuntu-noble-wsl-amd64-%%U.rootfs.tar.gz" && set "GOT=1"
+set "IMGNAME=ubuntu-24.04.5-wsl-amd64.wsl"
+set "IMGDIR=%USERPROFILE%\wsl"
+set "IMG=%IMGDIR%\%IMGNAME%"
+if not exist "%IMGDIR%" mkdir "%IMGDIR%"
+if not exist "%IMG%" if exist "%USERPROFILE%\Downloads\%IMGNAME%" copy /Y "%USERPROFILE%\Downloads\%IMGNAME%" "%IMG%" >nul
+if not exist "%IMG%" (
+  echo Downloading Ubuntu 24.04.5 for WSL - about 371 MB. It resumes by itself if the connection stalls.
+  curl -fL -C - --retry 30 --retry-delay 5 --retry-all-errors --speed-limit 20000 --speed-time 30 -o "%IMG%.part" "https://releases.ubuntu.com/noble/%IMGNAME%"
+  if !errorlevel! neq 0 (
+    echo The download did not finish. Run this script again - it continues from where it stopped.
+    exit /b 1
   )
-  if defined GOT move /Y "%TAR%.part" "%TAR%" >nul
+  move /Y "%IMG%.part" "%IMG%" >nul
 )
-if not exist "%TAR%" (
-  echo Download failed. Check your internet connection and run this again.
-  exit /b 1
+echo Checking the file against Ubuntu's published checksum...
+set "WANT="
+set "HAVE="
+curl -fsSL -o "%TEMP%\SHA256SUMS" https://releases.ubuntu.com/noble/SHA256SUMS
+for /f "tokens=1" %%h in ('findstr /c:"%IMGNAME%" "%TEMP%\SHA256SUMS" 2^>nul') do set "WANT=%%h"
+for /f "skip=1 delims=" %%h in ('certutil -hashfile "%IMG%" SHA256') do if not defined HAVE set "HAVE=%%h"
+set "HAVE=!HAVE: =!"
+if defined WANT (
+  if /i not "!HAVE!"=="!WANT!" (
+    echo The downloaded file does not match Ubuntu's checksum. Deleting it - run this again.
+    del "%IMG%"
+    exit /b 1
+  )
+  echo Checksum OK.
+) else (
+  echo No published checksum found for this file - continuing without that check.
 )
 set "WSLDIR=%USERPROFILE%\wsl\shopease"
 if not exist "%WSLDIR%" mkdir "%WSLDIR%"
-echo Importing the Ubuntu image into WSL...
-wsl --import shopease "%WSLDIR%" "%TAR%" --version 2
-if errorlevel 1 (
+echo Importing Ubuntu into WSL - a minute or two...
+wsl --import shopease "%WSLDIR%" "%IMG%" --version 2
+if !errorlevel! neq 0 (
+  copy /Y "%IMG%" "%IMG%.tar.gz" >nul
+  wsl --import shopease "%WSLDIR%" "%IMG%.tar.gz" --version 2
+)
+wsl -d shopease -u root -- true >nul 2>&1
+if !errorlevel! neq 0 (
   echo Import failed. Read the message above.
   exit /b 1
 )
@@ -140,7 +162,7 @@ echo Preparing the environment - user, ssh key, systemd...
 wsl -d shopease -u root -- sh -c "cat > /tmp/shopease_vm.pub" < "%KEY%.pub"
 wsl -d shopease -u root -- sh -c "cat > /tmp/wsl-stage1.sh" < "%ROOT%scripts\wsl-stage1.sh"
 wsl -d shopease -u root -- bash /tmp/wsl-stage1.sh
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   echo Preparation failed. Read the message above, then run: use-target.cmd reset-local
   exit /b 1
 )
@@ -153,7 +175,7 @@ echo Installing Jenkins inside the local environment - several minutes...
 wsl -d shopease -u root -- sh -c "cat > /tmp/wsl-stage2.sh" < "%ROOT%scripts\wsl-stage2.sh"
 wsl -d shopease -u root -- sh -c "cat > /tmp/install-jenkins.sh" < "%ROOT%scripts\install-jenkins.sh"
 wsl -d shopease -u root -- bash /tmp/wsl-stage2.sh
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   echo Jenkins install failed. Read the messages above.
   exit /b 1
 )
@@ -163,7 +185,7 @@ exit /b 0
 set /a N=0
 :waitloop
 ssh %SSHOPT% %2@%1 true >nul 2>&1
-if not errorlevel 1 exit /b 0
+if !errorlevel! equ 0 exit /b 0
 set /a N+=1
 if !N! GEQ 36 (
   echo Could not SSH to %1
@@ -174,7 +196,7 @@ goto waitloop
 
 :ensurejenkins
 ssh %SSHOPT% %2@%1 "test -d /var/lib/jenkins" >nul 2>&1
-if errorlevel 1 (
+if !errorlevel! neq 0 (
   echo Installing Jenkins on %1 - this takes several minutes...
   scp %SSHOPT% "%ROOT%scripts\install-jenkins.sh" %2@%1:~/
   ssh %SSHOPT% %2@%1 "bash ~/install-jenkins.sh"
