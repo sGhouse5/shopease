@@ -136,6 +136,13 @@
           retries: "{{ health_retries }}"
           delay: "{{ health_delay }}"
 
+        - name: Smoke test - the product list must answer with data
+          ansible.builtin.uri:
+            url: "http://localhost:{{ app_port }}/api/products"
+            return_content: true
+          register: smoke
+          failed_when: smoke.status != 200 or (smoke.json | default([]) | length) == 0
+
         - name: Report success
           ansible.builtin.debug:
             msg: "Release {{ release_id }} is live and healthy."
